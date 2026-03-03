@@ -1,0 +1,90 @@
+name: Aggiorna public
+
+# Questo workflow viene lanciato periodicamente e anche manualmente.
+# Per gli orari viene eseguita la logica all'interno di uno script bash
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'    # ogni 30 minuti (puoi ridurre a */15 o altro)
+  workflow_dispatch:
+    inputs:
+      extra_day:
+        description: 'Giorno aggiuntivo (YYYY-MM-DD), lasciarlo vuoto per ignorare'
+        required: false
+      extra_start:
+        description: 'Orario inizio extra (HH:MM, 24h), es. 08:00'
+        required: false
+      extra_end:
+        description: 'Orario fine extra (HH:MM, 24h), es. 14:00'
+        required: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}   # default, basta per lo stesso repo
+
+      - name: Controlla finestra di pubblicazione
+        id: check
+        run: |
+          #!/usr/bin/env bash
+          set -eo pipefail
+
+          # usare ora locale italiana
+          export TZ='Europe/Rome'
+          now=$(date +'%Y-%m-%d %H:%M')
+          dow=$(date +'%u')      # 1 = lun; ... 7 = dom
+          time=$(date +'%H:%M')
+          echo "Ora locale: $now (dow=$dow time=$time)"
+
+          allow=false
+
+          # mercoledì(3), venerdì(5) e domenica(7): inizio della finestra
+          if [[ "$dow" =~ ^(3|5|7)$ ]]; then
+            if [[ "$time" >="20:30" ]]; then
+              allow=true
+            fi
+          fi
+          # giovedì(4), sabato(6), lunedì(1): seconda parte della finestra
+          # In precedenza la finestra continuava fino alle 12:00; ora termina alle 23:59.
+          if [[ "$dow" =~ ^(4|6|1)$ ]]; then
+            if [[ "$time" <="23:59" ]]; then
+              allow=true
+            fi
+          fi
+
+          # gestione evento aggiuntivo fornito dall'utente via dispatch
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            eday="${{ github.event.inputs.extra_day }}"
+            estart="${{ github.event.inputs.extra_start }}"
+            eend="${{ github.event.inputs.extra_end }}"
+            if [[ -n "$eday" && -n "$estart" && -n "$eend" ]]; then
+              # confronta con data/ora completa
+              if [[ "$now" >="$eday $estart" && "$now" <="$eday $eend" ]]; then
+                allow=true
+              fi
+            fi
+          fi
+
+          echo "allow=$allow"
+          echo "proceed=$allow" >> $GITHUB_OUTPUT
+
+      - name: Commit & push HTML se nella finestra
+        if: steps.check.outputs.proceed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/*.html
+          if ! git diff --staged --quiet; then
+            git commit -m "Aggiornamento automatico dei file HTML (cron)"
+            git push
+          else
+            echo "Nessuna modifica da pushare."
+          fi
+
+      - name: Message fuori finestra
+        if: steps.check.outputs.proceed == 'false'
+        run: echo "Orario non valido, salto l'aggiornamento."
